@@ -12,6 +12,19 @@ const File = std.fs.File;
 const prog_name = "outfieldr";
 const repo_dir = "tldr-main";
 
+const PageInfo = struct {
+    name: []const u8,
+    desc: []const u8,
+
+    fn sortPageInfo(_: void, lhs: PageInfo, rhs: PageInfo) bool {
+        return std.mem.lessThan(u8, lhs.name, rhs.name);
+    }
+};
+
+fn orderStrings(_: void, a: []const u8, b: []const u8) bool {
+    return std.ascii.lessThanIgnoreCase(a, b);
+}
+
 pub const Pages = struct {
     appdata: Dir,
     language: []const u8,
@@ -31,6 +44,7 @@ pub const Pages = struct {
 
     pub fn update(allocator: Allocator, writer: anytype) !void {
         var appdata = try appdataDir(true, .{});
+
         const archive_fname = "main.tar.gz";
         var fd = try appdata.createFile(archive_fname, .{ .read = true });
         defer fd.close();
@@ -69,7 +83,7 @@ pub const Pages = struct {
         // English dir is just named "pages", so we manually add it.
         try langs.append(try allocator.dupe(u8, "en"));
 
-        std.sort.sort([]const u8, langs.items, u8, std.mem.lessThan);
+        std.sort.pdq([]const u8, langs.items, {}, orderStrings);
         for (langs.items) |l| try writer.print("{s}\n", .{l});
     }
 
@@ -101,18 +115,9 @@ pub const Pages = struct {
                 try platform_list.append(try allocator.dupe(u8, name));
         }
 
-        std.sort.sort([]const u8, platform_list.items, u8, std.mem.lessThan);
+        std.sort.pdq([]const u8, platform_list.items, {}, orderStrings);
         for (platform_list.items) |o| try writer.print("{s}\n", .{o});
     }
-
-    const PageInfo = struct {
-        name: []const u8,
-        desc: []const u8,
-
-        fn sortPageInfo(comptime _: type, lhs: PageInfo, rhs: PageInfo) bool {
-            return std.mem.lessThan(u8, lhs.name, rhs.name);
-        }
-    };
 
     pub fn listPages(this: *@This(), allocator: Allocator, writer: anytype) !void {
         var pages_info = ArrayList(PageInfo).init(allocator);
@@ -124,7 +129,7 @@ pub const Pages = struct {
             pages_info.deinit();
         }
 
-        var buf: [std.fs.MAX_PATH_BYTES * 2]u8 = undefined;
+        var buf: [std.fs.max_path_bytes * 2]u8 = undefined;
         var fba = FixedBufferAllocator.init(&buf);
         const page_paths = try this.pagePaths(fba.allocator(), allocator, &.{""});
 
@@ -146,18 +151,18 @@ pub const Pages = struct {
             }
         }
 
-        std.sort.sort(PageInfo, pages_info.items, u8, PageInfo.sortPageInfo);
+        std.sort.pdq(PageInfo, pages_info.items, {}, PageInfo.sortPageInfo);
         try pretty.prettifyPagesList(pages_info, writer);
     }
 
     fn pageDescription(allocator: Allocator, fd: File) ![]const u8 {
-        const reader = std.io.bufferedReader(fd.reader()).reader();
+        const reader = fd.reader();
 
         var skip_lines: usize = 2;
         while (skip_lines > 0) : (skip_lines -= 1)
             try reader.skipUntilDelimiterOrEof('\n');
 
-        var desc_buf = try allocator.alloc(u8, 512);
+        const desc_buf = try allocator.alloc(u8, 512);
         defer allocator.free(desc_buf);
         const desc_line = try reader.readUntilDelimiterOrEof(desc_buf, '\n');
         const desc = desc_line.?["> ".len..];
@@ -170,7 +175,7 @@ pub const Pages = struct {
         allocator: Allocator,
         command: []const []const u8,
     ) ![]const u8 {
-        var buf: [std.fs.MAX_PATH_BYTES * 2]u8 = undefined;
+        var buf: [std.fs.max_path_bytes * 2]u8 = undefined;
         var fba = FixedBufferAllocator.init(&buf);
         const page_paths = try this.pagePaths(fba.allocator(), allocator, command);
 
@@ -188,7 +193,7 @@ pub const Pages = struct {
         this: *@This(),
         allocator: Allocator,
     ) ![]const u8 {
-        var buf: [std.fs.MAX_PATH_BYTES * 2]u8 = undefined;
+        var buf: [std.fs.max_path_bytes * 2]u8 = undefined;
         var fba = FixedBufferAllocator.init(&buf);
         const page_paths = try this.pagePaths(fba.allocator(), allocator, &.{""});
 
@@ -294,7 +299,7 @@ pub const Pages = struct {
     }
 
     fn pageFilename(allocator: Allocator, command: []const []const u8) ![]const u8 {
-        var path_buf: [std.fs.MAX_PATH_BYTES]u8 = undefined;
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
         var fba = FixedBufferAllocator.init(&path_buf);
         const basename = try std.mem.join(fba.allocator(), "-", command);
         for (basename) |*c| c.* = std.ascii.toLower(c.*);
@@ -314,7 +319,7 @@ pub const Pages = struct {
     }
 
     fn appdataDir(create: bool, options: Dir.OpenDirOptions) !Dir {
-        var buf: [std.fs.MAX_PATH_BYTES]u8 = undefined;
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
         var fba = FixedBufferAllocator.init(&buf);
         const appdata_path = try std.fs.getAppDataDir(fba.allocator(), prog_name);
 

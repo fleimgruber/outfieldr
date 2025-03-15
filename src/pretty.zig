@@ -33,7 +33,7 @@ const PrettyLine = struct {
         line_slices: []const []const u8,
     ) ![]@This() {
         var lines_rich = try allocator.alloc(@This(), line_slices.len);
-        for (line_slices) |l, i| lines_rich[i] = @This().parseLine(l);
+        for (line_slices, 0..) |l, i| lines_rich[i] = @This().parseLine(l);
         return lines_rich;
     }
 
@@ -154,7 +154,7 @@ fn countLines(contents: []const u8) usize {
 }
 
 test "countLines" {
-    var multi_line_string =
+    const multi_line_string =
         \\ something
         \\ ~spanning~
         \\ multiple

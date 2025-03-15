@@ -8,62 +8,76 @@ const pretty = @import("pretty.zig");
 const color = @import("color.zig");
 
 const Pages = pages.Pages;
-const GeneralPurposeAllocator = std.heap.GeneralPurposeAllocator;
+const DebugAllocator = std.heap.DebugAllocator;
+const Allocator = std.mem.Allocator;
 
-const params = [_]clap.Param(clap.Help){
-    clap.parseParam("-h, --help                 Display this help and exit") catch unreachable,
-    clap.parseParam("-v, --version              Display version information and exit") catch unreachable,
-    clap.parseParam("-L, --language <language>  Page language") catch unreachable,
-    clap.parseParam("-p, --platform <platform>  Platform target") catch unreachable,
-    clap.parseParam("-u, --update               Update local TLDR pages cache") catch unreachable,
-    clap.parseParam("-l, --list                 List all available pages with descriptons") catch unreachable,
-    clap.parseParam("-R, --random               Fetch a random page") catch unreachable,
-    clap.parseParam("--list-languages           List all supported languages") catch unreachable,
-    clap.parseParam("--list-platforms           List all supported operating systems") catch unreachable,
-    clap.parseParam("--color <auto|off|on>      Enable or disable colored output") catch unreachable,
-    clap.parseParam("<page>...") catch unreachable,
-};
+const params = clap.parseParamsComptime(
+    \\-h, --help                 Display this help and exit.
+    \\-v, --version              Display version information and exit.
+    \\-L, --language <language>  Page language.
+    \\-p, --platform <platform>  Platform target.
+    \\-u, --update               Update local TLDR pages cache.
+    \\-l, --list                 List all available pages with descriptons.
+    \\-R, --random               Fetch a random page.
+    \\--list-languages           List all supported languages.
+    \\--list-platforms           List all supported operating systems.
+    \\--color <color>            Enable or disable colored output.
+    \\<page>...
+);
 
 var update: bool = undefined;
 var lang: []const u8 = undefined;
 var platform: []const u8 = undefined;
 var prog_name: []const u8 = "";
 
+const ColorChoices = enum { auto, off, on };
+
 pub fn main() anyerror!void {
     const stdout = std.io.getStdOut().writer();
-    var gpa = GeneralPurposeAllocator(.{}){};
-    defer std.debug.assert(!gpa.deinit());
+    var gpa = DebugAllocator(.{}){};
+    defer std.debug.assert(gpa.deinit() == .ok);
     var allocator = gpa.allocator();
 
-    var diag: clap.Diagnostic = undefined;
-    var args = clap.parse(clap.Help, &params, .{
+    const parsers = comptime .{
+        .language = clap.parsers.string,
+        .platform = clap.parsers.string,
+        .color = clap.parsers.enumeration(ColorChoices),
+        .page = clap.parsers.string,
+        .help = clap.parsers.int,
+        .random = clap.parsers.int,
+    };
+
+    var diag = clap.Diagnostic{};
+    var res = clap.parse(clap.Help, &params, parsers, .{
         .allocator = allocator,
         .diagnostic = &diag,
     }) catch |err| {
         diag.report(std.io.getStdErr().writer(), err) catch unreachable;
         helpExit();
     };
-    defer args.deinit();
+    defer res.deinit();
 
-    prog_name = args.exe_arg orelse return error.NoExeName;
+    prog_name = res.exe_arg orelse return error.NoExeName;
 
-    update = args.flag("--update");
-    lang = try setLang(args.option("--language"));
-    platform = setPlatform(args.option("--platform"));
+    update = res.args.update != 0;
+    lang = try setLang(allocator, res.args.language);
+    defer allocator.free(lang);
+
+    platform = setPlatform(res.args.platform);
 
     const positionals: ?[]const []const u8 = pos: {
-        const pos = args.positionals();
-        break :pos if (pos.len > 0) pos else null;
+        const pos = res.positionals;
+        break :pos if (pos.len > 0) pos[0] else null;
     };
 
-    if (args.flag("--help")) helpExit();
+    if (res.args.help != 0) helpExit();
 
-    if (args.flag("--version")) {
+    if (res.args.version != 0) {
         try stdout.print("outfieldr {s}\n", .{build_options.version});
         std.process.exit(0);
     }
 
-    try setColoredOutput(args.option("--color"));
+    try setColoredOutput(res.args.color);
 
     if (update) {
         Pages.update(allocator, stdout) catch |err| return errorExit(err);
@@ -74,22 +88,22 @@ pub fn main() anyerror!void {
     var tldr_pages = Pages.open(lang, platform) catch |err| return errorExit(err);
     defer tldr_pages.close();
 
-    if (args.flag("--list")) {
+    if (res.args.list != 0) {
         try tldr_pages.listPages(allocator, stdout);
         std.process.exit(0);
     }
 
-    if (args.flag("--list-languages")) {
+    if (res.args.@"list-languages" != 0) {
         try tldr_pages.listLangs(allocator, stdout);
         std.process.exit(0);
     }
 
-    if (args.flag("--list-platforms")) {
+    if (res.args.@"list-platforms" != 0) {
         try tldr_pages.listPlatforms(allocator, stdout);
         std.process.exit(0);
     }
 
-    if (args.flag("--random")) {
+    if (res.args.random != 0) {
         const page_contents = tldr_pages.randomPageContents(allocator) catch |err|
             return errorExit(err);
         try pretty.prettify(allocator, page_contents, stdout);
@@ -97,6 +111,7 @@ pub fn main() anyerror!void {
     }
 
     if (positionals) |pos| {
+        if (pos.len == 0) helpExit();
         const page_contents = tldr_pages.pageContents(allocator, pos) catch |err|
             return errorExit(err);
         defer allocator.free(page_contents);
@@ -115,7 +130,7 @@ fn errorExit(e: anyerror) !void {
         error.PlatformNotSupported => err("Platform '{s}' not supported for langauge '{s}'.", .{ platform, lang }),
         error.PageNotFound => {
             if (update)
-                err("Page doesn't exist in tldr-master. Consider contributing it!", .{})
+                err("Page doesn't exist in tldr-main. Consider contributing it!", .{})
             else
                 err("Page not found. Perhaps try with `--update`", .{});
         },
@@ -128,6 +143,7 @@ fn errorExit(e: anyerror) !void {
         error.NotConnected,
         error.AddressInUse,
         error.NetworkStreamTooLong,
+        error.StreamTooLong,
         => err("Network error '{s}'", .{@errorName(e)}),
         else => {
             err("Unknown error '{s}'", .{@errorName(e)});
@@ -137,15 +153,14 @@ fn errorExit(e: anyerror) !void {
     std.process.exit(1);
 }
 
-fn setColoredOutput(color_enable: ?[]const u8) !void {
+fn setColoredOutput(color_enable: ?ColorChoices) !void {
     color.enabled = en: {
         if (color_enable) |c| {
-            if (std.mem.eql(u8, c, "auto")) break :en colorAuto();
-            if (std.mem.eql(u8, c, "on")) break :en true;
-            if (std.mem.eql(u8, c, "off")) break :en false;
-
-            try std.io.getStdErr().writer().print("unrecognized color option '{s}'\n", .{c});
-            helpExit();
+            switch (c) {
+                ColorChoices.auto => break :en colorAuto(),
+                ColorChoices.on => break :en true,
+                ColorChoices.off => break :en false,
+            }
         } else break :en colorAuto();
     };
 }
@@ -154,12 +169,19 @@ fn colorAuto() bool {
     if (std.io.getStdOut().isTty()) return true else return false;
 }
 
-fn setLang(lang_flag: ?[]const u8) ![]const u8 {
-    if (lang_flag) |l| return l;
-    if (builtin.os.tag == .windows) return "en";
-    if (std.os.getenv("LANG")) |l|
-        return l[0 .. std.mem.indexOf(u8, l, "_") orelse l.len];
-    return "en";
+fn setLang(allocator: Allocator, lang_flag: ?[]const u8) ![]const u8 {
+    if (lang_flag) |l| return allocator.dupe(u8, l);
+    if (builtin.os.tag == .windows) return allocator.dupe(u8, "en");
+
+    const lang_var = std.process.getEnvVarOwned(allocator, "LANG") catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => {
+            return allocator.dupe(u8, "en");
+        },
+        else => return err,
+    };
+    defer allocator.free(lang_var);
+
+    return try allocator.dupe(u8, std.mem.sliceTo(lang_var, '_'));
 }
 
 fn setPlatform(platform_flag: ?[]const u8) []const u8 {
@@ -176,9 +198,9 @@ fn helpExit() noreturn {
     const stderr = std.io.getStdErr().writer();
 
     stderr.print("Usage: {s} ", .{prog_name}) catch unreachable;
-    clap.usage(stderr, &params) catch unreachable;
+    clap.usage(stderr, clap.Help, &params) catch unreachable;
     stderr.print("\nFlags: \n", .{}) catch unreachable;
-    clap.help(stderr, &params) catch unreachable;
+    clap.help(stderr, clap.Help, &params, .{}) catch unreachable;
     _ = stderr.write(
         \\
         \\Examples:

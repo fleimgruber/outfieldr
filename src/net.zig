@@ -1,40 +1,51 @@
 const std = @import("std");
-const zfetch = @import("zfetch");
+const http = std.http;
+const net = std.net;
+const tls = std.crypto.tls;
+const ArrayList = std.ArrayList;
 
 const File = std.fs.File;
 const Allocator = std.mem.Allocator;
 
+const headers_max_size = 4096;
+
 pub fn downloadPagesArchive(allocator: Allocator, fd: File, url: []const u8) !usize {
-    try zfetch.init();
-    defer zfetch.deinit();
+    const uri = try std.Uri.parse(url);
 
-    var headers = zfetch.Headers.init(allocator);
-    defer headers.deinit();
-    try headers.appendValue("Accept", "*/*");
+    var client = http.Client{ .allocator = allocator };
+    defer client.deinit();
 
-    var req = try zfetch.Request.init(allocator, url, null);
-    defer req.deinit();
-    try req.do(.GET, headers, null);
+    var server_header_buffer: [8192]u8 = undefined;
 
-    const reader = req.reader();
-    const writer = fd.writer();
+    var connection = try client.open(.GET, uri, .{
+        .server_header_buffer = &server_header_buffer,
+    });
+    defer connection.deinit();
 
-    var size: usize = 0;
-    var buf = try allocator.alloc(u8, 65536);
-    defer allocator.free(buf);
+    try connection.send();
+    try connection.wait();
+    try connection.finish();
 
-    while (true) {
-        const read = reader.read(buf) catch |e| switch (e) {
-            error.StreamTooLong => return error.NetworkStreamTooLong,
-            else => return e,
-        };
-
-        if (read == 0) break;
-        size += read;
-        try writer.writeAll(buf[0..read]);
+    const response = connection.response;
+    if (response.status != .ok) {
+        std.debug.print("Unexpected status: {}\n", .{response.status});
+        return error.UnexpectedStatus;
     }
 
-    if (size == 0) return error.DownloadFailedZeroSize;
+    const body_stream = connection.reader();
 
-    return size;
+    var buffer: [4096]u8 = undefined;
+    var writer = fd.writer();
+    var written_total: usize = 0;
+
+    while (true) {
+        const bytes_read = try body_stream.read(&buffer);
+        if (bytes_read == 0) break;
+
+        try writer.writeAll(buffer[0..bytes_read]);
+        written_total += bytes_read;
+    }
+
+    try std.io.getStdOut().writer().print("Download complete!\n", .{});
+    return written_total;
 }

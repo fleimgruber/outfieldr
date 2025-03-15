@@ -1,0 +1,12 @@
+.{
+    .name = .outfieldr,
+    .fingerprint = 0x216443aa02b6f819,
+    .version = "1.0.3",
+    .dependencies = .{
+        .clap = .{
+            .url = "git+https://github.com/Hejsil/zig-clap.git#e47028deaefc2fb396d3d9e9f7bd776ae0b2a43a",
+            .hash = "clap-0.10.0-oBajB434AQBDh-Ei3YtoKIRxZacVPF1iSwp3IX_ZB8f0",
+        },
+    },
+    .paths = .{""},
+}
